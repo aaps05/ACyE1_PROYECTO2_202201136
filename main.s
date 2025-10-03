@@ -2,9 +2,23 @@
 
 //Texto quemado
 
-.section .data 
-msg_!: .asciz 
+.section .data
+    msg_txt: .asciz "Ingrese el texto a cifrar (max 16 caracteres): "
+        lenMsgTxt = . - msg_txt
 
+    msg_key: .asciz "Ingrese la clave (32 caracteres hex): "
+        lenMsgKey = . - msg_key
+
+    key_err_msg: .asciz "Error: Valor de clave incorrecto\n"
+        lenKeyErr = . - key_err_msg
+
+    newline: .asciz "\n"
+    
+    debug_state: .asciz "Matriz de Estado:\n"
+        lenDebugState = . - debug_state
+    
+    debug_key: .asciz "Matriz de Clave:\n"
+        lenDebugKey = . - debug_key
 
 //Reserva Memoria
 
