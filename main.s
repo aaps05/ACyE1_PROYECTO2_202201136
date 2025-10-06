@@ -78,7 +78,7 @@ readTxtInput:
     //Puntero al buffer de entrada
     ldr x1, =buffer  
     //Puntero a matriz de estado         
-    ldr x2, =matState      
+    ldr x2, =MatrizEstado      
     //Contador de bytes procesados   
     mov x3, #0    
 
@@ -101,15 +101,17 @@ convert_loop:
     udiv x8, x3, x7    
     //fila = index % 4       
     msub x9, x8, x7, x3       
-    //offset = fila * 4
-    mul x10, x9, x7           
-    //offset final = fila * 4 + columna
-    add x10, x10, x8          
+    //offset = columna * 4
+    //mul x10, x9, x7
+    //se utiliza x8, que representa la columna
+    lsl x10, x8, #2  // Multiplicar por 4 usando desplazamiento
+    //offset final = columna * 4 + fila
+    add x10, x10, x9
 
     //Almacenar byte ASCII en matriz de estado
     strb w4, [x2, x10]        
     add x3, x3, #1
-    b convert_txt_loop
+    b convert_loop
 
 bytes_restantes:
     //Rellenar bytes restantes con 0x00
@@ -121,10 +123,12 @@ bytes_restantes:
     udiv x8, x3, x7    
     //fila = index % 4       
     msub x9, x8, x7, x3       
-    //offset = fila * 4
-    mul x10, x9, x7   
-    //offse final = fila * 4 + columna
-    add x10, x10, x8
+    //offset = columna * 4
+    //mul x10, x9, x7
+    //se utiliza x8, que representa la columna
+    lsl x10, x8, #2  // Multiplicar por 4 usando desplazamiento
+    //offset final = columna * 4 + fila
+    add x10, x10, x9
 
     //Padding con ceros
     mov w4, #0
@@ -166,6 +170,7 @@ skip_invalid:
     //Verificar espacio
     cmp w4, #0
     b.eq end_convert
+    //Newline
     cmp w4, #10
     b.eq end_convert
 
@@ -194,13 +199,15 @@ process_hex_pair:
     //Almacenar en column-major order
     mov x7, #4
     //columna = index / 4
-    udiv x8, x3, x7
-    //fila = index % 4
-    msub x9, x8, x7, x3
-    //offset = fila * 4
-    mul x10, x9, x7
-    //offset final = fila * 4 + columna
-    add x10, x10, x8
+    udiv x8, x3, x7    
+    //fila = index % 4       
+    msub x9, x8, x7, x3       
+    //offset = columna * 4
+    //mul x10, x9, x7
+    //se utiliza x8, que representa la columna
+    lsl x10, x8, #2  // Multiplicar por 4 usando desplazamiento
+    //offset final = columna * 4 + fila
+    add x10, x10, x9
 
     strb w5, [x2, x10]
     add x3, x3, #1
