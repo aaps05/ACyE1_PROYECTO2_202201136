@@ -1,68 +1,81 @@
 .include "DataConstant.s"
 
-//Texto quemado
-
 .section .data
-    msg_txt: .asciz "Ingrese el texto a cifrar (max 16 caracteres): "
+    msg_txt: .asciz "Ingrese el texto a cifrar (maximo 16 caracteres): "
         lenMsgTxt = . - msg_txt
-
+    
     msg_key: .asciz "Ingrese la clave (32 caracteres hex): "
         lenMsgKey = . - msg_key
-
+    
     key_err_msg: .asciz "Error: Valor de clave incorrecto\n"
         lenKeyErr = . - key_err_msg
-
+    
     newline: .asciz "\n"
     
     debug_state: .asciz "Matriz de Estado:\n"
         lenDebugState = . - debug_state
-
-    debug_r0: .asciz "Estado tras Ronda 0 (AddRoundKey):\n"
-        lenDebugR0 = . - debug_r0
-
-    debug_sbox: .asciz "Matriz de S-Box:\n"
-        lenDebugSBox = . - debug_sbox
-    
-    debug_sr: .asciz "Matriz tras ShiftRows:\n"
-        lenDebugSR = . - debug_sr
-    
-    debug_mc: .asciz "Matriz tras MixColumns:\n"
-        lenDebugMC = . - debug_mc
     
     debug_key: .asciz "Matriz de Clave:\n"
         lenDebugKey = . - debug_key
+    
+    msg_before_subbytes: .asciz "Estado antes de SubBytes:\n"
+        lenMsgBeforeSub = . - msg_before_subbytes
+    
+    msg_after_subbytes: .asciz "Estado después de SubBytes:\n"
+        lenMsgAfterSub = . - msg_after_subbytes
+    
+    msg_before_addroundkey: .asciz "Estado antes de AddRoundKey:\n"
+        lenMsgBeforeAdd = . - msg_before_addroundkey
+    
+    msg_after_addroundkey: .asciz "Estado después de AddRoundKey:\n"
+        lenMsgAfterAdd = . - msg_after_addroundkey
+    
+    msg_before_shiftrows: .asciz "Estado antes de ShiftRows:\n"
+        lenMsgBeforeShift = . - msg_before_shiftrows
+    
+    msg_after_shiftrows: .asciz "Estado después de ShiftRows:\n"
+        lenMsgAfterShift = . - msg_after_shiftrows
+    
+    msg_before_mixcolumns: .asciz "Estado antes de MixColumns:\n"
+        lenMsgBeforeMix = . - msg_before_mixcolumns
+    
+    msg_after_mixcolumns: .asciz "Estado después de MixColumns:\n"
+        lenMsgAfterMix = . - msg_after_mixcolumns
+    
+    msg_expanded_keys: .asciz "SSubclaves Expandidas:\n"
+        lenMsgExpKeys = . - msg_expanded_keys
+    
+    msg_round_key: .asciz "\nSubclave Ronda "
+        lenMsgRoundKey = . - msg_round_key
+    
+    msg_colon: .asciz ":\n"
+    
+    msg_round: .asciz "\nRonda: "
+        lenMsgRound = . - msg_round
+    
+    msg_round_end: .asciz " --\n"
+        lenMsgRoundEnd = . - msg_round_end
 
-    debug_round: .asciz "Matriz tras Ronda 1 "
-        lenDebugRound = . - debug_round
-
-//Reserva Memoria
+    msg_encrypted: .asciz "Texto Cifrado: "
+        lenEncryptedText = . - msg_encrypted
 
 .section .bss
-
-    //Matriz de estado del texto de 128 bits 
-    .global MatrizEstado
-    MatrizEstado: .space 16, 0 
- 
-    // Matriz de llaves inicial 128 bits
-    .global MatrizKey
-    MatrizKey: .space 16, 0
-
-    //Buffer de almacenamiento de encriptación 
-    .global Criptografia
-    Criptografia: .space 16, 0
-
-    //Buffer para almacenar entrada
+    .global matState
+    matState: .space 16, 0
+    
+    .global key
+    key: .space 16, 0
+    
+    .global criptograma
+    criptograma: .space 16, 0
     buffer: .space 256, 0
+    
+    .global expandedKeys
+    expandedKeys: .space 176, 0
+    tempWord: .space 4, 0
+    roundKey: .space 16, 0
 
-    //Buffer temp
-    bufferTemp: .space 64, 0
-
-    //Subclaves generadas (11 rondas * 16 bytes = 176 bytes (ronda 0-10))
-    .global RoundKeys
-    RoundKeys: .space 176, 0
-
-//INsrucciones para automatizar (macros)
-.macro print fd, buffer, len 
+.macro print fd, buffer, len
     mov x0, \fd
     ldr x1, =\buffer
     mov x2, \len
@@ -70,7 +83,7 @@
     svc #0
 .endm
 
-.macro read fd, buffer, len 
+.macro read fd, buffer, len
     mov x0, \fd
     ldr x1, =\buffer
     mov x2, \len
@@ -78,334 +91,967 @@
     svc #0
 .endm
 
-
-//---Inicio del programa---
-
 .section .text
 
-//FUnción: Leer cadenas de exto y convertir bytes -> ASCII
-.type   readTxtInput, %function
-.global readTxtInput
-readTxtInput:
+//Leer entrada de texto y convertir a matriz de estado
+.type readTextInput, %function
+.global readTextInput
+readTextInput:
     stp x29, x30, [sp, #-16]!
     mov x29, sp
-
-    //Leer entrada user
     read 0, buffer, 256
-    
-    //Convertir caracteres --> bytes ASCII, almacenar en matriz
-    //Puntero al buffer de entrada
-    ldr x1, =buffer  
-    //Puntero a matriz de estado         
-    ldr x2, =MatrizEstado      
-    //Contador de bytes procesados   
-    mov x3, #0    
-
-convert_loopTxt:
+    ldr x1, =buffer
+    ldr x2, =matState
+    mov x3, #0
+convert_text_loop:
     cmp x3, #16
-    b.ge bytes_restantesTxt      
-
-    //Cargar caracteres
+    b.ge pad_remaining_bytes
     ldrb w4, [x1, x3]
-    //Verificar newline
     cmp w4, #10
-    b.eq bytes_restantesTxt
-    //Verificar null terminator
+    b.eq pad_remaining_bytes
     cmp w4, #0
-    b.eq bytes_restantesTxt
-
-    //Almacenar carácter como byte ASCII en column-major --> índice: (index % 4) + (index / 4) * 4
+    b.eq pad_remaining_bytes
     mov x7, #4
-    //columna = index / 4
-    udiv x8, x3, x7    
-    //fila = index % 4       
-    msub x9, x8, x7, x3       
-    //offset = columna * 4
-    //mul x10, x9, x7
-    //se utiliza x8, que representa la columna
-    lsl x10, x8, #2  // Multiplicar por 4 usando desplazamiento
-    //offset final = columna * 4 + fila
-    add x10, x10, x9
-
-    //Almacenar byte ASCII en matriz de estado
-    strb w4, [x2, x10]        
+    udiv x8, x3, x7
+    msub x9, x8, x7, x3
+    mul x10, x9, x7
+    add x10, x10, x8
+    strb w4, [x2, x10]
     add x3, x3, #1
-    b convert_loopTxt
-
-bytes_restantesTxt:
-    //Rellenar bytes restantes con 0x00
+    b convert_text_loop
+pad_remaining_bytes:
     cmp x3, #16
-    b.ge end_convertDoneTxt
-
+    b.ge convert_text_done
     mov x7, #4
-    //columna = index / 4
-    udiv x8, x3, x7    
-    //fila = index % 4       
-    msub x9, x8, x7, x3       
-    //offset = columna * 4
-    //mul x10, x9, x7
-    //se utiliza x8, que representa la columna
-    lsl x10, x8, #2  // Multiplicar por 4 usando desplazamiento
-    //offset final = columna * 4 + fila
-    add x10, x10, x9
-
-    //Padding con ceros
+    udiv x8, x3, x7
+    msub x9, x8, x7, x3
+    mul x10, x9, x7
+    add x10, x10, x8
     mov w4, #0
     strb w4, [x2, x10]
     add x3, x3, #1
-    b bytes_restantesTxt
-
-end_convertDoneTxt:
-    //Retornar
+    b pad_remaining_bytes
+convert_text_done:
     ldp x29, x30, [sp], #16
     ret
-    .size readTxtInput, (.-readTxtInput)
+    .size readTextInput, (. - readTextInput)
 
-//FUncion para convertir clave hexadecimal 
-.type   hexKeyConvert, %function
-.global hexKeyConvert
-hexKeyConvert:
+.type convertHexKey, %function
+.global convertHexKey
+convertHexKey:
     stp x29, x30, [sp, #-16]!
     mov x29, sp
-
-    //Leer clave hexadecimal
     read 0, buffer, 33
-    //Puntero al buffer de entrada
     ldr x1, =buffer
-    //Puntero a matriz de llaves
-    ldr x2, =MatrizKey
-    //Contador de bytes procesados
+    ldr x2, =key
     mov x3, #0
-    //Indice buffer
     mov x11, #0
-
-convert_loop:
+convert_hex_loop:
     cmp x3, #16
-    b.ge end_convert
-
-//Saltar espacios y caracteres no validos hasta encontrar hex
-skip_invalid:
+    b.ge convert_hex_done
+skip_non_hex:
     ldrb w4, [x1, x11]
-    //Verificar espacio
     cmp w4, #0
-    b.eq end_convert
-    //Newline
+    b.eq convert_hex_done
     cmp w4, #10
-    b.eq end_convert
-
-    //Verificar si es caracter hex valido
+    b.eq convert_hex_done
     bl is_hex_char
     cmp w0, #1
     b.eq process_hex_pair
-
     add x11, x11, #1
-    b skip_invalid
-
+    b skip_non_hex
 process_hex_pair:
-    //Convertir primer caracter hex a valor numerico
-    //Primer nibble (para empaquetar/desempaquetar hex<->byte)
     ldrb w4, [x1, x11]
     add x11, x11, #1
-    bl hex_char_to_value
-    lsl w5, w0, #4   // Desplazar a la izquierda 4 bits
-
-    //Segundo nibble (para empaquetar/desempaquetar hex<->byte)
+    bl hex_char_to_nibble
+    lsl w5, w0, #4
     ldrb w4, [x1, x11]
     add x11, x11, #1
-    bl hex_char_to_value
-    orr w5, w5, w0   // Combinar nibbles
-
-    //Almacenar en column-major order
-    mov x7, #4
-    //columna = index / 4
-    udiv x8, x3, x7    
-    //fila = index % 4       
-    msub x9, x8, x7, x3       
-    //offset = columna * 4
-    //mul x10, x9, x7
-    //se utiliza x8, que representa la columna
-    lsl x10, x8, #2  // Multiplicar por 4 usando desplazamiento
-    //offset final = columna * 4 + fila
-    add x10, x10, x9
-
-    strb w5, [x2, x10]
+    bl hex_char_to_nibble
+    orr w5, w5, w0
+    strb w5, [x2, x3]
     add x3, x3, #1
-    b convert_loop
-
-end_convert:
+    b convert_hex_loop
+convert_hex_done:
     ldp x29, x30, [sp], #16
     ret
-    .size hexKeyConvert, (.-hexKeyConvert)
+    .size convertHexKey, (. - convertHexKey)
 
-//Función auxiliar: verificar si es carácter hex
 is_hex_char:
     cmp w4, #'0'
     b.lt not_hex
     cmp w4, #'9'
     b.le is_hex
-    
-    //Convertir a minúscula
-    orr w4, w4, #0x20         
+    orr w4, w4, #0x20
     cmp w4, #'a'
     b.lt not_hex
     cmp w4, #'f'
     b.le is_hex
-
 not_hex:
     mov w0, #0
     ret
-
 is_hex:
     mov w0, #1
     ret
 
-//Función auxiliar: convertir carácter hex a nibble
-hex_char_to_value:
+hex_char_to_nibble:
     cmp w4, #'0'
     b.lt hex_error
     cmp w4, #'9'
     b.le hex_digit
-
-    //Convertir a minúscula
-    orr w4, w4, #0x20         
+    orr w4, w4, #0x20
     cmp w4, #'a'
     b.lt hex_error
     cmp w4, #'f'
     b.gt hex_error
-
-    //Convertir a valor numérico
     sub w0, w4, #'a'
     add w0, w0, #10
     ret
-
 hex_digit:
     sub w0, w4, #'0'
     ret
-    
 hex_error:
     print 1, key_err_msg, lenKeyErr
     mov w0, #0
     ret
 
- //FUnción para imprimir matriz en formato debug
-.type   printMatrix, %function
+.type printMatrix, %function
 .global printMatrix
 printMatrix:
-    stp x29, x30, [sp, #-16]!
+    stp x29, x30, [sp, #-48]!
     mov x29, sp
-    //Reservar espacio en stack (reserva 48 b, alineados a 16)
-    sub sp, sp, #48
-
-    //Guardar paraámetros
-    //Matriz a imprimir
     str x0, [sp, #16]
-    //Msj
     str x1, [sp, #24]
-    //Longitud msj
     str x2, [sp, #32]
-
-    //Imprimir mensaje
     mov x0, #1
     ldr x1, [sp, #24]
     ldr x2, [sp, #32]
     mov x8, #64
     svc #0
-
-    //BAse de la matriz (cargar una vez)
-    ldr x20, [sp, #16]
-
-    //Imprimir matriz en formato debug 4x4
-    mov x23, #0          //Contador de filas
-
-print_rows:
+    mov x23, #0
+print_row_loop:
     cmp x23, #4
-    b.ge end_print
-
-    mov x24, #0          //Contador de columnas
-
-print_columns:
+    b.ge print_matrix_done
+    mov x24, #0
+print_col_loop:
     cmp x24, #4
-    b.ge next_row
-
-    //Calcular índice column-major: columna*4 + fila
-    //Multiplicar por 4 usando desplazamiento
-    lsl x26, x24, #2
-    //SUmar fila
-    add x25, x26, x23
-
-    //-- Misma funcionalidad que antes --
-    //mov x25, #4
-    //mul x25, x24, x25
-    //add x25, x25, x23
-
-    //Cargar byte de la matriz
-    //Puntero a la matriz
-    //ldr x0, [sp, #16]
-    //Cargar byte      
-    //ldrb w1, [x20, x25]  
-
-    ldrb w0, [x20, x25]  // Cargar byte en w0 para imprimir
-    //Imprimir byte en formato hexadecimal
-    bl print_hex_byte      
-
+    b.ge print_row_newline
+    mov x25, #4
+    mul x25, x23, x25
+    add x25, x25, x24
+    ldr x20, [sp, #16]
+    ldrb w0, [x20, x25]
+    bl print_hex_byte
     add x24, x24, #1
-    b print_columns
-
-next_row:
+    b print_col_loop
+print_row_newline:
     print 1, newline, 1
     add x23, x23, #1
-    b print_rows
-
-end_print:
+    b print_row_loop
+print_matrix_done:
     print 1, newline, 1
-    //ldp x29, x30, [sp], #48
-    add sp, sp, #48
-    //ldp x19, x20, [sp], #16
-    ldp x29, x30, [sp], #16
+    ldp x29, x30, [sp], #48
     ret
-    .size printMatrix, (.-printMatrix)
+    .size printMatrix, (. - printMatrix)
 
-//Función para imprimir byte en hexadecimal
 print_hex_byte:
     stp x29, x30, [sp, #-16]!
     mov x29, sp
-
-    //Separar nibbles
     and w1, w0, #0xF0
     lsr w1, w1, #4
     and w2, w0, #0x0F
-
-    //Convertir nibbles a caracteres hex
-    //Nibble alto
     cmp w1, #10
-    b.lt hex_to_char_high
+    b.lt high_digit
     add w1, w1, #'A' - 10
-    b hex_high_done
-
-hex_to_char_high:
+    b high_done
+high_digit:
     add w1, w1, #'0'
-
-hex_high_done:
-    //Nibble bajo
+high_done:
     cmp w2, #10
-    b.lt hex_to_char_low
+    b.lt low_digit
     add w2, w2, #'A' - 10
-    b hex_low_done
-
-hex_to_char_low:
+    b low_done
+low_digit:
     add w2, w2, #'0'
-
-hex_low_done:
-    //Imprimir byte en formato hexadecimal
+low_done:
     sub sp, sp, #16
     strb w1, [sp]
     strb w2, [sp, #1]
     mov w3, #' '
     strb w3, [sp, #2]
-    
     mov x0, #1
     mov x1, sp
     mov x2, #3
+    mov x8, #64
+    svc #0
+    add sp, sp, #16
+    ldp x29, x30, [sp], #16
+    ret
+
+.type subBytes, %function
+.global subBytes
+subBytes:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    ldr x19, =matState
+    ldr x20, =Sbox
+    mov x0, #0
+subbytes_loop:
+    cmp x0, #16
+    b.ge subbytes_done
+    ldrb w1, [x19, x0]
+    uxtw x1, w1
+    ldrb w2, [x20, x1]
+    strb w2, [x19, x0]
+    add x0, x0, #1
+    b subbytes_loop
+subbytes_done:
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldp x29, x30, [sp], #32
+    ret
+    .size subBytes, (. - subBytes)
+
+.type shiftRows, %function
+.global shiftRows
+shiftRows:
+    stp x29, x30, [sp, #-48]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    str x21, [sp, #32]
+    str x22, [sp, #40]
+    ldr x19, =matState
+    ldrb w20, [x19, #4]
+    ldrb w21, [x19, #5]
+    strb w21, [x19, #4]
+    ldrb w21, [x19, #6]
+    strb w21, [x19, #5]
+    ldrb w21, [x19, #7]
+    strb w21, [x19, #6]
+    strb w20, [x19, #7]
+    ldrb w20, [x19, #8]
+    ldrb w21, [x19, #9]
+    ldrb w22, [x19, #10]
+    strb w22, [x19, #8]
+    ldrb w22, [x19, #11]
+    strb w22, [x19, #9]
+    strb w20, [x19, #10]
+    strb w21, [x19, #11]
+    ldrb w20, [x19, #12]
+    ldrb w21, [x19, #15]
+    strb w21, [x19, #12]
+    ldrb w21, [x19, #14]
+    strb w21, [x19, #15]
+    ldrb w21, [x19, #13]
+    strb w21, [x19, #14]
+    strb w20, [x19, #13]
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldr x21, [sp, #32]
+    ldr x22, [sp, #40]
+    ldp x29, x30, [sp], #48
+    ret
+    .size shiftRows, (. - shiftRows)
+
+.type galois_mul2, %function
+galois_mul2:
+    and w1, w0, #0x80
+    lsl w0, w0, #1
+    and w0, w0, #0xFF
+    cmp w1, #0x80
+    b.ne galois_mul2_done
+    mov w2, #0x1B
+    eor w0, w0, w2
+galois_mul2_done:
+    ret
+    .size galois_mul2, (. - galois_mul2)
+
+.type galois_mul3, %function
+galois_mul3:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    mov w19, w0
+    bl galois_mul2
+    eor w0, w0, w19
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+    .size galois_mul3, (. - galois_mul3)
+
+.type mixColumns, %function
+.global mixColumns
+mixColumns:
+    stp x29, x30, [sp, #-80]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    str x21, [sp, #32]
+    str x22, [sp, #40]
+    str x23, [sp, #48]
+    str x24, [sp, #56]
+    str x25, [sp, #64]
+    str x26, [sp, #72]
+    ldr x19, =matState
+    mov x20, #0
+mixcol_row_loop:
+    cmp x20, #4
+    b.ge mixcol_done
+    ldrb w22, [x19, x20]
+    add x0, x20, #4
+    ldrb w23, [x19, x0]
+    add x0, x20, #8
+    ldrb w24, [x19, x0]
+    add x0, x20, #12
+    ldrb w25, [x19, x0]
+    mov w0, w22
+    bl galois_mul2
+    mov w26, w0
+    mov w0, w23
+    bl galois_mul3
+    eor w26, w26, w0
+    eor w26, w26, w24
+    eor w26, w26, w25
+    sub sp, sp, #16
+    str w26, [sp, #0]
+    mov w26, w22
+    mov w0, w23
+    bl galois_mul2
+    eor w26, w26, w0
+    mov w0, w24
+    bl galois_mul3
+    eor w26, w26, w0
+    eor w26, w26, w25
+    str w26, [sp, #4]
+    mov w26, w22
+    eor w26, w26, w23
+    mov w0, w24
+    bl galois_mul2
+    eor w26, w26, w0
+    mov w0, w25
+    bl galois_mul3
+    eor w26, w26, w0
+    str w26, [sp, #8]
+    mov w0, w22
+    bl galois_mul3
+    mov w26, w0
+    eor w26, w26, w23
+    eor w26, w26, w24
+    mov w0, w25
+    bl galois_mul2
+    eor w26, w26, w0
+    str w26, [sp, #12]
+    ldr w26, [sp, #0]
+    strb w26, [x19, x20]
+    add x0, x20, #4
+    ldr w26, [sp, #4]
+    strb w26, [x19, x0]
+    add x0, x20, #8
+    ldr w26, [sp, #8]
+    strb w26, [x19, x0]
+    add x0, x20, #12
+    ldr w26, [sp, #12]
+    strb w26, [x19, x0]
+    add sp, sp, #16
+    add x20, x20, #1
+    b mixcol_row_loop
+mixcol_done:
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldr x21, [sp, #32]
+    ldr x22, [sp, #40]
+    ldr x23, [sp, #48]
+    ldr x24, [sp, #56]
+    ldr x25, [sp, #64]
+    ldr x26, [sp, #72]
+    ldp x29, x30, [sp], #80
+    ret
+    .size mixColumns, (. - mixColumns)
+
+.type rotByte, %function
+rotByte:
+    ldrb w1, [x0, #0]
+    ldrb w2, [x0, #1]
+    ldrb w3, [x0, #2]
+    ldrb w4, [x0, #3]
+    strb w2, [x0, #0]
+    strb w3, [x0, #1]
+    strb w4, [x0, #2]
+    strb w1, [x0, #3]
+    ret
+    .size rotByte, (. - rotByte)
+
+.type byteSub, %function
+byteSub:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    mov x19, x0
+    ldr x20, =Sbox
+    mov x1, #0
+bytesub_loop:
+    cmp x1, #4
+    b.ge bytesub_done
+    ldrb w2, [x19, x1]
+    uxtw x2, w2
+    ldrb w3, [x20, x2]
+    strb w3, [x19, x1]
+    add x1, x1, #1
+    b bytesub_loop
+bytesub_done:
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldp x29, x30, [sp], #32
+    ret
+    .size byteSub, (. - byteSub)
+
+.type xorWords, %function
+xorWords:
+    ldrb w2, [x0, #0]
+    ldrb w3, [x1, #0]
+    eor w2, w2, w3
+    strb w2, [x0, #0]
+    ldrb w2, [x0, #1]
+    ldrb w3, [x1, #1]
+    eor w2, w2, w3
+    strb w2, [x0, #1]
+    ldrb w2, [x0, #2]
+    ldrb w3, [x1, #2]
+    eor w2, w2, w3
+    strb w2, [x0, #2]
+    ldrb w2, [x0, #3]
+    ldrb w3, [x1, #3]
+    eor w2, w2, w3
+    strb w2, [x0, #3]
+    ret
+    .size xorWords, (. - xorWords)
+
+.type copyWord, %function
+copyWord:
+    ldrb w2, [x1, #0]
+    strb w2, [x0, #0]
+    ldrb w2, [x1, #1]
+    strb w2, [x0, #1]
+    ldrb w2, [x1, #2]
+    strb w2, [x0, #2]
+    ldrb w2, [x1, #3]
+    strb w2, [x0, #3]
+    ret
+    .size copyWord, (. - copyWord)
+
+.type keyExpansion, %function
+.global keyExpansion
+keyExpansion:
+    stp x29, x30, [sp, #-64]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    str x21, [sp, #32]
+    str x22, [sp, #40]
+    str x23, [sp, #48]
+    str x24, [sp, #56]
+    ldr x19, =key
+    ldr x20, =expandedKeys
+    ldr x21, =Rcon
+    mov x22, #0
+copy_initial_key:
+    cmp x22, #16
+    b.ge expansion_loop_init
+    ldrb w23, [x19, x22]
+    strb w23, [x20, x22]
+    add x22, x22, #1
+    b copy_initial_key
+expansion_loop_init:
+    mov x22, #4
+expansion_loop:
+    cmp x22, #44
+    b.ge expansion_done
+    sub x23, x22, #1
+    mov x24, #4
+    mul x23, x23, x24
+    add x23, x20, x23
+    ldr x0, =tempWord
+    mov x1, x23
+    bl copyWord
+    and x26, x22, #3
+    cbnz x26, not_multiple_of_n
+    ldr x0, =tempWord
+    bl rotByte
+    ldr x0, =tempWord
+    bl byteSub
+    lsr x25, x22, #2
+    sub x25, x25, #1
+    mov x24, #4
+    mul x25, x25, x24
+    add x25, x21, x25
+    ldr x0, =tempWord
+    ldrb w1, [x0, #0]
+    ldrb w2, [x25, #0]
+    eor w1, w1, w2
+    strb w1, [x0, #0]
+not_multiple_of_n:
+    sub x23, x22, #4
+    mov x24, #4
+    mul x23, x23, x24
+    add x23, x20, x23
+    mov x24, #4
+    mul x24, x22, x24
+    add x24, x20, x24
+    mov x0, x24
+    mov x1, x23
+    bl copyWord
+    mov x0, x24
+    ldr x1, =tempWord
+    bl xorWords
+    add x22, x22, #1
+    b expansion_loop
+expansion_done:
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldr x21, [sp, #32]
+    ldr x22, [sp, #40]
+    ldr x23, [sp, #48]
+    ldr x24, [sp, #56]
+    ldp x29, x30, [sp], #64
+    ret
+    .size keyExpansion, (. - keyExpansion)
+
+.type printExpandedKeys, %function
+.global printExpandedKeys
+printExpandedKeys:
+    stp x29, x30, [sp, #-48]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    str x21, [sp, #32]
+    str x22, [sp, #40]
+    print 1, msg_expanded_keys, lenMsgExpKeys
+    ldr x19, =expandedKeys
+    mov x20, #0
+print_rounds_loop:
+    cmp x20, #11
+    b.ge print_rounds_done
+    print 1, msg_round_key, lenMsgRoundKey
+    mov w0, w20
+    bl printRoundNumber
+    print 1, msg_colon, 2
+    mov x21, #16
+    mul x21, x20, x21
+    add x21, x19, x21
+    // Imprimir en formato column-major (4x4)
+    mov x22, #0
+print_key_rows:
+    cmp x22, #4
+    b.ge print_key_done
+    mov x23, #0
+print_key_cols:
+    cmp x23, #4
+    b.ge print_key_row_end
+    // Calcular indice column-major: columna * 4 + fila
+    mov x2, #4
+    mul x2, x23, x2
+    add x2, x2, x22
+    ldrb w0, [x21, x2]
+    bl print_hex_byte
+    add x23, x23, #1
+    b print_key_cols
+print_key_row_end:
+    print 1, newline, 1
+    add x22, x22, #1
+    b print_key_rows
+print_key_done:
+    add x20, x20, #1
+    b print_rounds_loop
+print_rounds_done:
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldr x21, [sp, #32]
+    ldr x22, [sp, #40]
+    ldp x29, x30, [sp], #48
+    ret
+    .size printExpandedKeys, (. - printExpandedKeys)
+
+.type getRoundKey, %function
+.global getRoundKey
+getRoundKey:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    ldr x19, =expandedKeys
+    mov x2, #16
+    mul x2, x0, x2
+    add x19, x19, x2
+    mov x20, x1
+    mov x2, #0
+copy_round_key_loop:
+    cmp x2, #16
+    b.ge copy_round_key_done
+    ldrb w3, [x19, x2]
+    strb w3, [x20, x2]
+    add x2, x2, #1
+    b copy_round_key_loop
+copy_round_key_done:
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldp x29, x30, [sp], #32
+    ret
+    .size getRoundKey, (. - getRoundKey)
+
+.type addRoundKeyWithRound, %function
+.global addRoundKeyWithRound
+addRoundKeyWithRound:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    ldr x1, =roundKey
+    bl getRoundKey
+    ldr x19, =matState
+    ldr x20, =roundKey
+    mov x0, #0
+addround_loop:
+    cmp x0, #16
+    b.ge addround_done
+    mov x1, #4
+    udiv x2, x0, x1
+    msub x3, x2, x1, x0
+    mul x4, x3, x1
+    add x4, x4, x2
+    ldrb w1, [x19, x0]
+    ldrb w2, [x20, x4]
+    eor w3, w1, w2
+    strb w3, [x19, x0]
+    add x0, x0, #1
+    b addround_loop
+addround_done:
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldp x29, x30, [sp], #32
+    ret
+    .size addRoundKeyWithRound, (. - addRoundKeyWithRound)
+
+//-PrintROundnUMBER Y Header
+.type printRoundNumber, %function
+printRoundNumber:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    
+    mov w19, w0              // Guardar el número en w19
+    sub sp, sp, #16          // Espacio para el string
+    
+    cmp w19, #10
+    b.lt single_digit_round
+    
+    // Para número 10
+    mov w1, #'1'
+    strb w1, [sp, #0]
+    mov w1, #'0'
+    strb w1, [sp, #1]
+    mov x0, #1
+    mov x1, sp
+    mov x2, #2
+    mov x8, #64
+    svc #0
+    b print_round_num_done
+    
+single_digit_round:
+    // Para números 0-9
+    add w19, w19, #'0'       // Convertir a ASCII
+    strb w19, [sp]
+    mov x0, #1
+    mov x1, sp
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    
+print_round_num_done:
+    add sp, sp, #16
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+    .size printRoundNumber, (. - printRoundNumber)
+
+.type printRoundHeader, %function
+printRoundHeader:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    
+    mov w19, w0              // Guardar el número de ronda
+    
+    // Imprimir "\nRonda: "
+    print 1, msg_round, lenMsgRound
+    
+    // Imprimir el número
+    mov w0, w19
+    bl printRoundNumber
+    
+    // Imprimir " --\n"
+    print 1, msg_round_end, lenMsgRoundEnd
+    
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+    .size printRoundHeader, (. - printRoundHeader)
+
+// Primera iteracion de AES-128
+// Implementación completa de AES-128
+.type aesEncrypt, %function
+.global aesEncrypt
+aesEncrypt:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    
+    // ============================================
+    // Ronda 0: AddRoundKey inicial
+    // ============================================
+    mov w0, #0
+    bl printRoundHeader
+    
+    print 1, msg_before_addroundkey, lenMsgBeforeAdd
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    mov w0, #0
+    bl addRoundKeyWithRound
+    
+    print 1, msg_after_addroundkey, lenMsgAfterAdd
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    // ============================================
+    // Rondas 1-9: SubBytes → ShiftRows → MixColumns → AddRoundKey
+    // ============================================
+    mov x19, #1                    // Contador de ronda inicial = 1
+    
+rounds_1_to_9_loop:
+    cmp x19, #10                   // Si x19 >= 10, ir a ronda final
+    b.ge final_round
+    
+    // --- Imprimir encabezado de ronda ---
+    mov w0, w19                    // Pasar número de ronda actual
+    bl printRoundHeader
+    
+    // --- SubBytes ---
+    print 1, msg_before_subbytes, lenMsgBeforeSub
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    bl subBytes
+    
+    print 1, msg_after_subbytes, lenMsgAfterSub
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    // --- ShiftRows ---
+    print 1, msg_before_shiftrows, lenMsgBeforeShift
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    bl shiftRows
+    
+    print 1, msg_after_shiftrows, lenMsgAfterShift
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    // --- MixColumns ---
+    print 1, msg_before_mixcolumns, lenMsgBeforeMix
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    bl mixColumns
+    
+    print 1, msg_after_mixcolumns, lenMsgAfterMix
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    // --- AddRoundKey ---
+    print 1, msg_before_addroundkey, lenMsgBeforeAdd
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    mov w0, w19                    // Pasar número de ronda actual
+    bl addRoundKeyWithRound
+    
+    print 1, msg_after_addroundkey, lenMsgAfterAdd
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    // --- Incrementar contador y continuar ---
+    add x19, x19, #1
+    b rounds_1_to_9_loop
+
+    // ============================================
+    // Ronda 10: SubBytes → ShiftRows → AddRoundKey (SIN MixColumns)
+    // ============================================
+final_round:
+    mov w0, #10
+    bl printRoundHeader
+    
+    // --- SubBytes ---
+    print 1, msg_before_subbytes, lenMsgBeforeSub
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    bl subBytes
+    
+    print 1, msg_after_subbytes, lenMsgAfterSub
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    // --- ShiftRows ---
+    print 1, msg_before_shiftrows, lenMsgBeforeShift
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    bl shiftRows
+    
+    print 1, msg_after_shiftrows, lenMsgAfterShift
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    // --- AddRoundKey final (sin MixColumns) ---
+    print 1, msg_before_addroundkey, lenMsgBeforeAdd
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    mov w0, #10
+    bl addRoundKeyWithRound
+    
+    print 1, msg_after_addroundkey, lenMsgAfterAdd
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    // ============================================
+    // Imprimir texto cifrado final
+    // ============================================
+    print 1, msg_encrypted, lenEncryptedText
+    ldr x0, =matState
+    ldr x1, =debug_state
+    mov x2, lenDebugState
+    bl printMatrix
+    
+    //IImprimir texto cifrado en línea recta
+    print 1, newline, 1
+    print 1, msg_encrypted, lenEncryptedText
+    bl printCiphertext
+
+    // Restaurar registros y retornar
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldp x29, x30, [sp], #32
+    ret
+    
+    .size aesEncrypt, (. - aesEncrypt)
+
+// Función para imprimir el texto cifrado en línea recta (formato hexadecimal)
+.type printCiphertext, %function
+.global printCiphertext
+printCiphertext:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+    
+    ldr x19, =matState
+    mov x20, #0
+    
+print_cipher_loop:
+    cmp x20, #16
+    b.ge print_cipher_done
+    
+    // Leer byte en orden column-major
+    mov x1, #4
+    udiv x2, x20, x1      // x2 = columna
+    msub x3, x2, x1, x20  // x3 = fila
+    mul x4, x3, x1        // x4 = fila * 4
+    add x4, x4, x2        // índice = fila * 4 + columna
+    
+    ldrb w0, [x19, x4]
+    bl print_hex_byte_no_space  // Imprime sin espacio
+    
+    add x20, x20, #1
+    b print_cipher_loop
+    
+print_cipher_done:
+    print 1, newline, 1
+    ldr x19, [sp, #16]
+    ldr x20, [sp, #24]
+    ldp x29, x30, [sp], #32
+    ret
+    .size printCiphertext, (. - printCiphertext)
+
+// Función auxiliar para imprimir byte sin espacio
+print_hex_byte_no_space:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    
+    and w1, w0, #0xF0
+    lsr w1, w1, #4
+    and w2, w0, #0x0F
+    
+    cmp w1, #10
+    b.lt high_digit_ns
+    add w1, w1, #'A' - 10
+    b high_done_ns
+high_digit_ns:
+    add w1, w1, #'0'
+high_done_ns:
+    cmp w2, #10
+    b.lt low_digit_ns
+    add w2, w2, #'A' - 10
+    b low_done_ns
+low_digit_ns:
+    add w2, w2, #'0'
+low_done_ns:
+    sub sp, sp, #16
+    strb w1, [sp]
+    strb w2, [sp, #1]
+    
+    mov x0, #1
+    mov x1, sp
+    // Solo 2 caracteres, sin espacio
+    mov x2, #2  
     mov x8, #64
     svc #0
     
@@ -413,306 +1059,26 @@ hex_low_done:
     ldp x29, x30, [sp], #16
     ret
 
-//Funcion SubBytes (Sbox)
-.type   SubBytes, %function
-.global SubBytes
-SubBytes:
-    stp x29, x30, [sp, #-16]!
-    mov x29, sp
-
-    ldr x1, =Sbox         // tabla de 256 bytes 
-    mov x2, #16
-
-1:
-    ldrb w3, [x0]         // b = state[i]
-    ldrb w4, [x1, x3]     // b' = Sbox[b]
-    strb w4, [x0]         // state[i] = b'
-    add  x0, x0, #1
-    subs x2, x2, #1
-    b.ne 1b
-
-    ldp x29, x30, [sp], #16
-    ret
-.size SubBytes, (. - SubBytes)
-
-//Función ShiftRows
-.type   ShiftRows, %function
-.global ShiftRows
-ShiftRows:
-    stp x29, x30, [sp, #-16]!
-    mov x29, sp
-
-    ldr x9, =bufferTemp    // scratch para 4 bytes
-
-    mov x20, #0            // fila = 0..3
-0:  // row loop
-    cmp x20, #4
-    b.ge 3f
-
-    // shift = fila
-    mov x21, x20
-
-    // ---- leer fila rotada a temp[c] ----
-    mov x22, #0            // c = 0..3
-1:  cmp x22, #4
-    b.ge 2f
-    add x23, x22, x21      // src_col = (c + shift) & 3
-    and x23, x23, #3
-    lsl x24, x23, #2       // src_col*4
-    add x24, x24, x20      // + fila
-    ldrb w25, [x0, x24]
-    strb w25, [x9, x22]
-    add x22, x22, #1
-    b   1b
-
-    // ---- escribir temp[c] en fila, col=c ----
-2:  mov x22, #0
-4:  cmp x22, #4
-    b.ge 5f
-    ldrb w25, [x9, x22]
-    lsl  x24, x22, #2      // c*4
-    add  x24, x24, x20     // + fila
-    strb w25, [x0, x24]
-    add  x22, x22, #1
-    b    4b
-
-5:  add x20, x20, #1
-    b   0b
-
-3:
-    ldp x29, x30, [sp], #16
-    ret
-.size ShiftRows, (. - ShiftRows)
-
-//--
-// --- xtime: multiplica por 2 en GF(2^8) ---
-// Entrada:  w0 = byte [0..255]
-// Salida:   w0 = (w0 * 2) en Rijndael GF(2^8)
-.type   xtime, %function
-xtime:
-    // Si el bit7 estaba en 1, tras el shift hay que XOR con 0x1B
-    and w1, w0, #0x80
-    lsl w0, w0, #1
-    and w0, w0, #0xFF
-    cbz w1, 1f
-    mov w2, #0x1B
-    eor w0, w0, w2
-1:  ret
-.size xtime, (. - xtime)
-
-
-// --- MixColumns(state) --- (x0 = &MatrizEstado)
-// Opera cada columna: r = M * c, con
-// r0 = 2*s0 ^ 3*s1 ^ 1*s2 ^ 1*s3
-// r1 = 1*s0 ^ 2*s1 ^ 3*s2 ^ 1*s3
-// r2 = 1*s0 ^ 1*s1 ^ 2*s2 ^ 3*s3
-// r3 = 3*s0 ^ 1*s1 ^ 1*s2 ^ 2*s3
-.type   MixColumns, %function
-.global MixColumns
-MixColumns:
-    stp x29, x30, [sp, #-16]!
-    mov x29, sp
-    stp x19, x20, [sp, #-16]!
-
-    mov x20, x0              // base del state (callee-saved)
-    mov x22, #0              // columna = 0..3
-
-// loop por columnas
-1:
-    cmp x22, #4
-    b.ge 9f
-
-    // base = col*4
-    lsl x23, x22, #2
-
-    // cargar s0..s3 (columna en column-major)
-    ldrb w4, [x20, x23]          // s0 (fila0)
-    add  x24, x23, #1
-    ldrb w5, [x20, x24]          // s1 (fila1)
-    add  x24, x23, #2
-    ldrb w6, [x20, x24]          // s2 (fila2)
-    add  x24, x23, #3
-    ldrb w7, [x20, x24]          // s3 (fila3)
-
-    // t0..t3 = 2*si  (xtime)
-    mov  w0, w4
-    bl   xtime
-    mov  w8, w0                  // t0
-
-    mov  w0, w5
-    bl   xtime
-    mov  w9, w0                  // t1
-
-    mov  w0, w6
-    bl   xtime
-    mov  w10, w0                 // t2
-
-    mov  w0, w7
-    bl   xtime
-    mov  w11, w0                 // t3
-
-        // r0 = 2*s0 ^ 3*s1 ^ s2 ^ s3
-    mov  w12, w8              // t0
-    eor  w12, w12, w9         // ^ t1
-    eor  w12, w12, w5         // ^ s1  -> (t1 ^ s1) = 3*s1
-    eor  w12, w12, w6         // ^ s2
-    eor  w12, w12, w7         // ^ s3
-
-    // r1 = s0 ^ 2*s1 ^ 3*s2 ^ s3
-    mov  w13, w4              // s0
-    eor  w13, w13, w9         // ^ t1 = 2*s1
-    eor  w13, w13, w10        // ^ t2
-    eor  w13, w13, w6         // ^ s2   -> (t2 ^ s2) = 3*s2
-    eor  w13, w13, w7         // ^ s3
-
-    // r2 = s0 ^ s1 ^ 2*s2 ^ 3*s3
-    mov  w14, w4              // s0
-    eor  w14, w14, w5         // ^ s1
-    eor  w14, w14, w10        // ^ t2 = 2*s2
-    eor  w14, w14, w11        // ^ t3
-    eor  w14, w14, w7         // ^ s3   -> (t3 ^ s3) = 3*s3
-
-    // r3 = 3*s0 ^ s1 ^ s2 ^ 2*s3
-    mov  w15, w8              // t0
-    eor  w15, w15, w4         // ^ s0   -> (t0 ^ s0) = 3*s0
-    eor  w15, w15, w5         // ^ s1
-    eor  w15, w15, w6         // ^ s2
-    eor  w15, w15, w11        // ^ t3 = 2*s3
-
-
-    // escribir r0..r3 en la misma columna
-    strb w12, [x20, x23]         // fila0
-    add  x24, x23, #1
-    strb w13, [x20, x24]         // fila1
-    add  x24, x23, #2
-    strb w14, [x20, x24]         // fila2
-    add  x24, x23, #3
-    strb w15, [x20, x24]         // fila3
-
-    add x22, x22, #1
-    b   1b
-
-9:
-    ldp x19, x20, [sp], #16
-    ldp x29, x30, [sp], #16
-    ret
-.size MixColumns, (. - MixColumns)
-//--
-
-
- //Función de encriptación (placeholder)
-.type   encryptAES, %function
-.global encryptAES
-
-encryptAES:
-    stp x29, x30, [sp, #-16]!
-    mov x29, sp
-
-    // Ronda 0: estado ^= clave (AddRoundKey)
-    ldr x0, =MatrizEstado
-    ldr x1, =MatrizKey
-    bl  AddRoundKey
-
-    // Imprimir estado tras AddRoundKey (puedes usar tu mensaje nuevo)
-    ldr x0, =MatrizEstado
-    ldr x1, =debug_r0
-    mov x2, lenDebugR0
-    bl printMatrix
-
-    //IMprimir SubBytes (Sbox)
-    ldr x0, =MatrizEstado
-    bl  SubBytes
-    // Debug
-    ldr x0, =MatrizEstado
-    ldr x1, =debug_sbox
-    mov x2, lenDebugSBox
-    bl  printMatrix
-
-    //Imprimir ShiftRows
-    ldr x0, =MatrizEstado
-    bl  ShiftRows
-    // Debug
-    ldr x0, =MatrizEstado
-    ldr x1, =debug_sr
-    mov x2, lenDebugSR
-    bl  printMatrix
-
-    //Imprimir MixColumns
-    ldr x0, =MatrizEstado
-    bl  MixColumns
-    // Debug
-    ldr x0, =MatrizEstado
-    ldr x1, =debug_mc
-    mov x2, lenDebugMC
-    bl  printMatrix
-
-    // Placeholder: copiar matriz de estado a matriz de criptografía
-    ldr x0, =MatrizEstado
-    ldr x1, =Criptografia
-    mov x2, #16
-    //bl memcpy
-
-copy:
-    cbz x2, done_copy
-    ldrb w3, [x0], #1
-    strb w3, [x1], #1
-    sub x2, x2, #1
-    b copy
-
-done_copy:
-    ldp x29, x30, [sp], #16
-    ret
-    .size encryptAES, (. - encryptAES)
-
-//FUncion AddRoundKey (placeholder)
-.type   AddRoundKey, %function
-.global AddRoundKey
-AddRoundKey:
-    stp x29, x30, [sp, #-16]!
-    mov x29, sp
-    mov x2, #16
-1:
-    ldrb w3, [x0]     // *state
-    ldrb w4, [x1]     // *key
-    eor  w3, w3, w4
-    strb w3, [x0]
-    add  x0, x0, #1
-    add  x1, x1, #1
-    subs x2, x2, #1
-    b.ne 1b
-    ldp x29, x30, [sp], #16
-    ret
-.size AddRoundKey, (. - AddRoundKey)
-
-
-//Función principal
-.type   _start, %function
+.type _start, %function
 .global _start
 _start:
-    //Leer texto de entrada como cadena
     print 1, msg_txt, lenMsgTxt
-    bl readTxtInput
-
-    //Debug: mostrar matriz de estado
-    ldr x0, =MatrizEstado
+    bl readTextInput
+    print 1, debug_state, lenDebugState
+    ldr x0, =matState
     ldr x1, =debug_state
     mov x2, lenDebugState
     bl printMatrix
-
-    //Leer clave en hexadecimal
     print 1, msg_key, lenMsgKey
-    bl hexKeyConvert
-
-    //Debug: mostrar matriz de clave
-    ldr x0, =MatrizKey
+    bl convertHexKey
+    print 1, debug_key, lenDebugKey
+    ldr x0, =key
     ldr x1, =debug_key
     mov x2, lenDebugKey
     bl printMatrix
-
-//Encriptar
-    bl encryptAES
-
-//Salir
+    bl keyExpansion
+    bl printExpandedKeys
+    bl aesEncrypt
     mov x0, #0
     mov x8, #93
     svc #0
