@@ -50,7 +50,7 @@
     
     msg_colon: .asciz ":\n"
     
-    msg_round: .asciz "\nRonda: "
+    msg_round: .asciz "\n-- Ronda: "
         lenMsgRound = . - msg_round
     
     msg_round_end: .asciz " --\n"
@@ -58,6 +58,10 @@
 
     msg_encrypted: .asciz "Texto Cifrado: "
         lenEncryptedText = . - msg_encrypted
+
+    //MENSAJE PARA CAMBIO NO.3 
+    msg_Cambio3: .asciz "MODIFICACION PROYECTO 2 \n"
+        lenMsgCambio3 = . - msg_Cambio3
 
 .section .bss
     .global matState
@@ -99,26 +103,34 @@
 readTextInput:
     stp x29, x30, [sp, #-16]!
     mov x29, sp
+
+    // Leer texto de entrada
     read 0, buffer, 256
     ldr x1, =buffer
     ldr x2, =matState
     mov x3, #0
+
 convert_text_loop:
     cmp x3, #16
     b.ge pad_remaining_bytes
+
     ldrb w4, [x1, x3]
     cmp w4, #10
     b.eq pad_remaining_bytes
+
     cmp w4, #0
     b.eq pad_remaining_bytes
+
+    // Almacenar en formato column-major
     mov x7, #4
-    udiv x8, x3, x7
-    msub x9, x8, x7, x3
-    mul x10, x9, x7
-    add x10, x10, x8
+    udiv x8, x3, x7 //indice/4 
+    msub x9, x8, x7, x3 //indice%4
+    mul x10, x9, x7 //indice%4 *4
+    add x10, x10, x8 //indice%4 *4 + indice/4
     strb w4, [x2, x10]
     add x3, x3, #1
     b convert_text_loop
+
 pad_remaining_bytes:
     cmp x3, #16
     b.ge convert_text_done
@@ -160,18 +172,20 @@ skip_non_hex:
     b.eq process_hex_pair
     add x11, x11, #1
     b skip_non_hex
+
 process_hex_pair:
     ldrb w4, [x1, x11]
     add x11, x11, #1
-    bl hex_char_to_nibble
+    bl hex_char_to_nibble // Convertir primer carácter hexadecimal
     lsl w5, w0, #4
     ldrb w4, [x1, x11]
     add x11, x11, #1
-    bl hex_char_to_nibble
+    bl hex_char_to_nibble // Convertir segundo carácter hexadecimal
     orr w5, w5, w0
     strb w5, [x2, x3]
     add x3, x3, #1
     b convert_hex_loop
+
 convert_hex_done:
     ldp x29, x30, [sp], #16
     ret
@@ -187,9 +201,11 @@ is_hex_char:
     b.lt not_hex
     cmp w4, #'f'
     b.le is_hex
+
 not_hex:
     mov w0, #0
     ret
+
 is_hex:
     mov w0, #1
     ret
@@ -215,6 +231,7 @@ hex_error:
     mov w0, #0
     ret
 
+// Imprimir matriz en formato 4x4
 .type printMatrix, %function
 .global printMatrix
 printMatrix:
@@ -223,16 +240,19 @@ printMatrix:
     str x0, [sp, #16]
     str x1, [sp, #24]
     str x2, [sp, #32]
+
     mov x0, #1
     ldr x1, [sp, #24]
     ldr x2, [sp, #32]
     mov x8, #64
     svc #0
     mov x23, #0
+
 print_row_loop:
     cmp x23, #4
     b.ge print_matrix_done
     mov x24, #0
+
 print_col_loop:
     cmp x24, #4
     b.ge print_row_newline
@@ -244,10 +264,12 @@ print_col_loop:
     bl print_hex_byte
     add x24, x24, #1
     b print_col_loop
+
 print_row_newline:
     print 1, newline, 1
     add x23, x23, #1
     b print_row_loop
+
 print_matrix_done:
     print 1, newline, 1
     ldp x29, x30, [sp], #48
@@ -264,15 +286,19 @@ print_hex_byte:
     b.lt high_digit
     add w1, w1, #'A' - 10
     b high_done
+
 high_digit:
     add w1, w1, #'0'
+
 high_done:
     cmp w2, #10
     b.lt low_digit
     add w2, w2, #'A' - 10
     b low_done
+
 low_digit:
     add w2, w2, #'0'
+
 low_done:
     sub sp, sp, #16
     strb w1, [sp]
@@ -288,6 +314,7 @@ low_done:
     ldp x29, x30, [sp], #16
     ret
 
+// SubBytes
 .type subBytes, %function
 .global subBytes
 subBytes:
@@ -314,6 +341,7 @@ subbytes_done:
     ret
     .size subBytes, (. - subBytes)
 
+// ShiftRows
 .type shiftRows, %function
 .global shiftRows
 shiftRows:
@@ -348,6 +376,8 @@ shiftRows:
     ldrb w21, [x19, #13]
     strb w21, [x19, #14]
     strb w20, [x19, #13]
+
+    // Restaurar registros
     ldr x19, [sp, #16]
     ldr x20, [sp, #24]
     ldr x21, [sp, #32]
@@ -356,6 +386,7 @@ shiftRows:
     ret
     .size shiftRows, (. - shiftRows)
 
+//FUnciones de Galois Field para MixColumns
 .type galois_mul2, %function
 galois_mul2:
     and w1, w0, #0x80
@@ -382,11 +413,13 @@ galois_mul3:
     ret
     .size galois_mul3, (. - galois_mul3)
 
+// MixColumns
 .type mixColumns, %function
 .global mixColumns
 mixColumns:
     stp x29, x30, [sp, #-80]!
     mov x29, sp
+
     str x19, [sp, #16]
     str x20, [sp, #24]
     str x21, [sp, #32]
@@ -395,8 +428,10 @@ mixColumns:
     str x24, [sp, #56]
     str x25, [sp, #64]
     str x26, [sp, #72]
+
     ldr x19, =matState
     mov x20, #0
+
 mixcol_row_loop:
     cmp x20, #4
     b.ge mixcol_done
@@ -471,6 +506,7 @@ mixcol_done:
     ret
     .size mixColumns, (. - mixColumns)
 
+// Funcion de Expansion Key
 .type rotByte, %function
 rotByte:
     ldrb w1, [x0, #0]
@@ -484,6 +520,7 @@ rotByte:
     ret
     .size rotByte, (. - rotByte)
 
+// Sustitución de bytes
 .type byteSub, %function
 byteSub:
     stp x29, x30, [sp, #-32]!
@@ -509,6 +546,7 @@ bytesub_done:
     ret
     .size byteSub, (. - byteSub)
 
+// XOR de dos palabras (4 bytes)
 .type xorWords, %function
 xorWords:
     ldrb w2, [x0, #0]
@@ -810,9 +848,7 @@ aesEncrypt:
     str x19, [sp, #16]
     str x20, [sp, #24]
     
-    // ============================================
     // Ronda 0: AddRoundKey inicial
-    // ============================================
     mov w0, #0
     bl printRoundHeader
     
@@ -831,9 +867,7 @@ aesEncrypt:
     mov x2, lenDebugState
     bl printMatrix
     
-    // ============================================
     // Rondas 1-9: SubBytes → ShiftRows → MixColumns → AddRoundKey
-    // ============================================
     mov x19, #1                    // Contador de ronda inicial = 1
     
 rounds_1_to_9_loop:
@@ -909,9 +943,7 @@ rounds_1_to_9_loop:
     add x19, x19, #1
     b rounds_1_to_9_loop
 
-    // ============================================
     // Ronda 10: SubBytes → ShiftRows → AddRoundKey (SIN MixColumns)
-    // ============================================
 final_round:
     mov w0, #10
     bl printRoundHeader
@@ -975,6 +1007,10 @@ final_round:
     print 1, newline, 1
     print 1, msg_encrypted, lenEncryptedText
     bl printCiphertext
+
+    print 1, newline, 1
+    print 1, msg_Cambio3, lenMsgCambio3
+    //bl printMatrix
 
     // Restaurar registros y retornar
     ldr x19, [sp, #16]
@@ -1079,6 +1115,7 @@ _start:
     bl keyExpansion
     bl printExpandedKeys
     bl aesEncrypt
+
     mov x0, #0
     mov x8, #93
     svc #0
